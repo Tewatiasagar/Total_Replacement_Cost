@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Total Asset Cost Widget</title>
+<style>
+  body { margin: 0; padding: 16px; font-family: var(--font-sans, sans-serif); background: transparent; }
+  .card { background: var(--color-background-primary, #fff); border: 0.5px solid var(--color-border-tertiary, #e0e0e0); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem; }
+  .label { font-size: 13px; color: var(--color-text-secondary, #666); margin: 0 0 4px; }
+  .value { font-size: 28px; font-weight: 500; color: var(--color-text-primary, #111); margin: 0; }
+  .sub { font-size: 12px; color: var(--color-text-tertiary, #999); margin: 4px 0 0; }
+  .status { font-size: 13px; color: var(--color-text-secondary, #666); padding: 8px 0; }
+  .breakdown { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 1rem; }
+  .mini-card { background: var(--color-background-secondary, #f5f5f5); border-radius: 8px; padding: 10px 12px; }
+  .mini-label { font-size: 11px; color: var(--color-text-secondary, #666); margin: 0 0 2px; }
+  .mini-value { font-size: 15px; font-weight: 500; color: var(--color-text-primary, #111); margin: 0; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .dot-road { background: #378ADD; }
+  .dot-bridge { background: #1D9E75; }
+  .dot-culvert { background: #D85A30; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--color-border-tertiary, #e0e0e0); border-top-color: #378ADD; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 6px; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <p class="label">Total replacement cost — selected assets</p>
+  <p class="value" id="total">$0.00</p>
+  <p class="sub" id="count">No assets selected</p>
+</div>
+
+<div class="breakdown">
+  <div class="mini-card">
+    <p class="mini-label"><span class="dot dot-road"></span>Roads</p>
+    <p class="mini-value" id="road-cost">$0.00</p>
+  </div>
+  <div class="mini-card">
+    <p class="mini-label"><span class="dot dot-bridge"></span>Bridges</p>
+    <p class="mini-value" id="bridge-cost">$0.00</p>
+  </div>
+  <div class="mini-card">
+    <p class="mini-label"><span class="dot dot-culvert"></span>Culverts</p>
+    <p class="mini-value" id="culvert-cost">$0.00</p>
+  </div>
+</div>
+
+<p class="status" id="status">Waiting for map selection...</p>
+
+<script>
+  const PORTAL_ITEM_ID = "53e03b0322d54bc593a7f34180a575a0";
+  const ORG_URL = "https://sct.maps.arcgis.com";
+  const SERVICE_URL = `${ORG_URL}/sharing/rest/content/items/${PORTAL_ITEM_ID}/data`;
+
+  const LAYER_INDEX = { culverts: 0, bridges: 1, roads: 2 };
+  const COST_FIELDS = { roads: "CRV", bridges: "Replacement_Cost", culverts: "Replacement_Cost" };
+
+  function fmt(val) {
+    return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD", maximumFractionDigits: 0 }).format(val || 0);
+  }
+
+  function setStatus(msg, loading) {
+    const el = document.getElementById("status");
+    el.innerHTML = loading ? `<span class="spinner"></span>${msg}` : msg;
+  }
+
+  async function queryLayerCost(featureServerUrl, layerIndex, costField, objectIds) {
+    if (!objectIds || objectIds.length === 0) return 0;
+    const url = `${featureServerUrl}/${layerIndex}/query`;
+    const params = new URLSearchParams({
+      where: `OBJECTID IN (${objectIds.join(",")})`,
+      outStatistics: JSON.stringify([{ statisticType: "sum", onStatisticField: costField, outStatisticFieldName: "total" }]),
+      f: "json"
+    });
+    try {
+      const res = await fetch(`${url}?${params}`);
+      const data = await res.json();
+      return data?.features?.[0]?.attributes?.total || 0;
+    } catch { return 0; }
+  }
+
+  async function getFeatureServiceUrl() {
+    try {
+      const res = await fetch(`${ORG_URL}/sharing/rest/content/items/${PORTAL_ITEM_ID}?f=json`);
+      const data = await res.json();
+      return data.url;
+    } catch { return null; }
+  }
+
+  let featureServiceUrl = null;
+
+  async function init() {
+    setStatus("Connecting to feature service...", true);
+    featureServiceUrl = await getFeatureServiceUrl();
+    if (!featureServiceUrl) {
+      setStatus("Could not connect to feature service. Check item ID.");
+      return;
+    }
+    setStatus("Ready — make a selection on the map.");
+  }
+
+  async function updateCosts(roadIds, bridgeIds, culvertIds) {
+    setStatus("Calculating costs...", true);
+
+    const [roadCost, bridgeCost, culvertCost] = await Promise.all([
+      queryLayerCost(featureServiceUrl, LAYER_INDEX.roads, COST_FIELDS.roads, roadIds),
+      queryLayerCost(featureServiceUrl, LAYER_INDEX.bridges, COST_FIELDS.bridges, bridgeIds),
+      queryLayerCost(featureServiceUrl, LAYER_INDEX.culverts, COST_FIELDS.culverts, culvertIds)
+    ]);
+
+    const total = roadCost + bridgeCost + culvertCost;
+    const count = (roadIds?.length || 0) + (bridgeIds?.length || 0) + (culvertIds?.length || 0);
+
+    document.getElementById("total").textContent = fmt(total);
+    document.getElementById("road-cost").textContent = fmt(roadCost);
+    document.getElementById("bridge-cost").textContent = fmt(bridgeCost);
+    document.getElementById("culvert-cost").textContent = fmt(culvertCost);
+    document.getElementById("count").textContent = `${count} asset${count !== 1 ? "s" : ""} selected`;
+    setStatus("Updated from map selection.");
+  }
+
+  window.addEventListener("message", async (event) => {
+    const msg = event.data;
+    if (!msg || msg.type !== "assetSelection") return;
+    await updateCosts(msg.roadIds || [], msg.bridgeIds || [], msg.culvertIds || []);
+  });
+
+  init();
+</script>
+</body>
+</html>
